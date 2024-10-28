@@ -50,7 +50,7 @@ func (a *App) Run() {
 
 	fmt.Printf("[+] Downloading playlist...\n")
 
-	playlistFile, err := a.downloadFileToTemporary(a.Url, "playlist")
+	playlistFile, err := a.downloadFileToTemporary(a.Url)
 	if err != nil {
 		fmt.Println("[!] Error downloading playlist file:", err)
 		return
@@ -88,10 +88,15 @@ func (a *App) Run() {
 		go a.worker(jobsChan, resultsChan)
 	}
 
-	var bar *progressbar.ProgressBar
-	if !a.Verbose {
-		bar = progressbar.Default(int64(len(slicesToDownload)), "[+] Download chunks")
-	}
+	bar := progressbar.NewOptions(
+		len(slicesToDownload),
+		progressbar.OptionSetDescription("[+] Download chunks"),
+		progressbar.OptionShowBytes(false),
+		progressbar.OptionFullWidth(),
+		progressbar.OptionSetElapsedTime(false),
+		progressbar.OptionSetPredictTime(false),
+		progressbar.OptionShowCount(),
+	)
 
 	for i, slice := range slicesToDownload {
 		jobsChan <- VideoChunk{i: i, url: slice, total: len(slicesToDownload)}
@@ -100,9 +105,7 @@ func (a *App) Run() {
 
 	for a := 1; a <= numWorkers; a++ {
 		downloadedSlices = append(downloadedSlices, <-resultsChan)
-		if bar != nil {
-			bar.Add(1)
-		}
+		bar.Add(1)
 	}
 
 	for _, downloadedSlice := range downloadedSlices {
@@ -127,12 +130,12 @@ func (a *App) Run() {
 
 func (a *App) worker(slicesToDownload <-chan VideoChunk, results chan<- DownloadedVideoChunk) {
 	for sliceToDownload := range slicesToDownload {
-		downloadedFilePath, _ := a.downloadFileToTemporary(sliceToDownload.url, fmt.Sprintf("chunk %d/%d", sliceToDownload.i+1, sliceToDownload.total))
+		downloadedFilePath, _ := a.downloadFileToTemporary(sliceToDownload.url)
 		results <- DownloadedVideoChunk{i: sliceToDownload.i, path: downloadedFilePath}
 	}
 }
 
-func (a *App) downloadFileToTemporary(url string, description string) (string, error) {
+func (a *App) downloadFileToTemporary(url string) (string, error) {
 	if url == "" {
 		return "", fmt.Errorf("url is empty")
 	}
@@ -155,15 +158,7 @@ func (a *App) downloadFileToTemporary(url string, description string) (string, e
 	}
 	defer resp.Body.Close()
 
-	if a.Verbose {
-		bar := progressbar.DefaultBytes(
-			resp.ContentLength,
-			fmt.Sprintf("Get %s", description),
-		)
-		_, err = io.Copy(io.MultiWriter(tempFile, bar), resp.Body)
-	} else {
-		_, err = io.Copy(tempFile, resp.Body)
-	}
+	_, err = io.Copy(tempFile, resp.Body)
 
 	if err != nil {
 		return "", err
