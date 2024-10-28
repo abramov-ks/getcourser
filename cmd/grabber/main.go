@@ -13,8 +13,6 @@ const defaultOutputFileName = "video.mpg"
 var (
 	threads     = flag.Int("threads", 5, "Number of threads to use")
 	verboseMode = flag.Bool("verbose", false, "Verbose mode")
-	videoUrl    = flag.Arg(0)
-	outputName  = flag.Arg(1)
 )
 
 func main() {
@@ -23,6 +21,9 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	videoUrl := flag.Arg(0)
+	outputName := flag.Arg(1)
 
 	if outputName == "" {
 		outputName = defaultOutputFileName
