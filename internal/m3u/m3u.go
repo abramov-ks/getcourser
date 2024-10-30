@@ -2,7 +2,6 @@ package m3u
 
 import (
 	"bufio"
-	"log"
 	"os"
 	"strings"
 )
@@ -24,17 +23,20 @@ func (u *M3u) GetSlices() ([]string, error) {
 		line := scanner.Text()
 		if strings.Contains(line, "#EXTINF") {
 			if scanner.Scan() {
-				slices = append(slices, scanner.Text())
+				currentSlice := scanner.Text()
+				if len(strings.TrimSpace(currentSlice)) > 0 {
+					slices = append(slices, currentSlice)
+				}
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	return slices, nil
 }
 
-func NewM3u(filePath string) *M3u {
+func New(filePath string) *M3u {
 	return &M3u{filePath: filePath}
 }

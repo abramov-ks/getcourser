@@ -62,7 +62,7 @@ func (a *App) Run() {
 
 	a.tempFiles.playlist = playlistFile
 
-	m3uReader := m3u.NewM3u(playlistFile)
+	m3uReader := m3u.New(playlistFile)
 	slicesToDownload, err := m3uReader.GetSlices()
 
 	if err != nil {
@@ -88,15 +88,7 @@ func (a *App) Run() {
 		go a.worker(jobsChan, resultsChan)
 	}
 
-	bar := progressbar.NewOptions(
-		len(slicesToDownload),
-		progressbar.OptionSetDescription("[+] Download chunks"),
-		progressbar.OptionShowBytes(false),
-		progressbar.OptionFullWidth(),
-		progressbar.OptionSetElapsedTime(false),
-		progressbar.OptionSetPredictTime(false),
-		progressbar.OptionShowCount(),
-	)
+	bar := a.createProgressBar(len(slicesToDownload))
 
 	for i, slice := range slicesToDownload {
 		jobsChan <- VideoChunk{i: i, url: slice, total: len(slicesToDownload)}
@@ -119,7 +111,13 @@ func (a *App) Run() {
 	}
 	defer outputFile.Close()
 
-	err = a.concatSliceFiles(outputFile, downloadedSlices)
+	files, err := a.reorderSlicesToArray(downloadedSlices)
+	if err != nil {
+		fmt.Println("[!] Error ordering slices:", err)
+		return
+	}
+
+	err = a.concatFiles(outputFile, files)
 	if err != nil {
 		fmt.Println("[!] Error concatenating chunks:", err)
 		return
@@ -182,21 +180,17 @@ func (a *App) cleanup() {
 	}
 }
 
-func (a *App) concatSliceFiles(outputFile *os.File, slices []DownloadedVideoChunk) error {
-	for i := 0; i < len(slices); i++ {
-		currentSlice := a.getSliceByNo(slices, i)
-		if currentSlice == nil {
-			return fmt.Errorf("could not find chunk %d", i)
-		}
-		sliceFile, err := os.Open(currentSlice.path)
+func (a *App) concatFiles(outputFile *os.File, slices []string) error {
+	for _, slice := range slices {
+		sliceFile, err := os.Open(slice)
 		defer sliceFile.Close()
 
 		if err != nil {
-			return err
+			return fmt.Errorf("could not open slice file %v", slice)
 		}
 		_, err = io.Copy(outputFile, sliceFile)
 		if err != nil {
-			return err
+			return fmt.Errorf("could not copy slice file %v", slice)
 		}
 	}
 	return nil
@@ -227,4 +221,29 @@ func (a *App) createUnusedFilename(filename string) string {
 			i++
 		}
 	}
+}
+
+func (a *App) reorderSlicesToArray(slices []DownloadedVideoChunk) ([]string, error) {
+	var files = make([]string, 0)
+	for i := 0; i < len(slices); i++ {
+		currentSlice := a.getSliceByNo(slices, i)
+		if currentSlice == nil {
+			return nil, fmt.Errorf("could not find slice #%d", i)
+		}
+		files = append(files, currentSlice.path)
+	}
+
+	return files, nil
+}
+
+func (a *App) createProgressBar(counter int) *progressbar.ProgressBar {
+	return progressbar.NewOptions(
+		counter,
+		progressbar.OptionSetDescription("[+] Download chunks"),
+		progressbar.OptionShowBytes(false),
+		progressbar.OptionFullWidth(),
+		progressbar.OptionSetElapsedTime(false),
+		progressbar.OptionSetPredictTime(false),
+		progressbar.OptionShowCount(),
+	)
 }
