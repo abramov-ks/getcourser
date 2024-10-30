@@ -23,6 +23,7 @@ type App struct {
 		playlist string
 		slices   []string
 	}
+	completed bool
 }
 
 type VideoChunk struct {
@@ -124,6 +125,7 @@ func (a *App) Run() {
 	}
 
 	fmt.Printf("[+] Done. Downloaded %d chunks to %s \n", len(downloadedSlices), outputFile.Name())
+	a.completed = true
 }
 
 func (a *App) worker(slicesToDownload <-chan VideoChunk, results chan<- DownloadedVideoChunk) {
@@ -168,6 +170,14 @@ func (a *App) cleanup() {
 	if a.Verbose {
 		fmt.Printf("[+] Cleaning up...\n")
 	}
+
+	if a.completed != true {
+		err := os.Remove(a.outputName)
+		if err == nil && a.Verbose {
+			fmt.Printf("[+] Removed drafted output file\n")
+		}
+	}
+
 	err := os.Remove(a.tempFiles.playlist)
 	if err == nil && a.Verbose {
 		fmt.Printf("[+] Deleted playlist: %s\n", a.tempFiles.playlist)

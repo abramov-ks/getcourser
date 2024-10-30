@@ -4,7 +4,8 @@ Usage:
 ```
 grabber <playlist_url> <output.mpg>
     -threads int
-Number of threads to use (default 5)
+    Number of threads to use (default 5)
+    
     -verbose
-Verbose mode
+    Verbose mode
 ```
