@@ -13,6 +13,7 @@ const defaultOutputFileName = "video.mpg"
 var (
 	threads     = flag.Int("threads", 5, "Number of threads to use")
 	verboseMode = flag.Bool("verbose", false, "Verbose mode")
+	playlist    = flag.String("playlist", "", "Batch from playlist")
 )
 
 func main() {
@@ -29,11 +30,11 @@ func main() {
 		outputName = defaultOutputFileName
 	}
 
-	if videoUrl == "" {
+	if videoUrl == "" && playlist == nil {
 		flag.Usage()
 		os.Exit(0)
 	}
 
-	appInstance := app.NewApp(videoUrl, *threads, *verboseMode, outputName)
+	appInstance := app.NewApp(videoUrl, *threads, *verboseMode, playlist, outputName)
 	appInstance.Run()
 }

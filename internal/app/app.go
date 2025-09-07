@@ -1,25 +1,29 @@
 package app
 
 import (
+	"bufio"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"getcourser/internal/m3u"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/schollz/progressbar/v3"
 )
 
 type App struct {
-	Url        string
-	Threads    int
-	Verbose    bool
-	outputName string
-	tempFiles  struct {
+	Url          string
+	Threads      int
+	Verbose      bool
+	playlistFile *string
+	outputName   string
+	tempFiles    struct {
 		playlist string
 		slices   []string
 	}
@@ -37,21 +41,69 @@ type DownloadedVideoChunk struct {
 	path string
 }
 
-func NewApp(url string, threads int, verboseMode bool, outputName string) *App {
+func NewApp(url string, threads int, verboseMode bool, playlistFile *string, outputName string) *App {
 	return &App{
-		Url:        url,
-		Threads:    threads,
-		Verbose:    verboseMode,
-		outputName: outputName,
+		Url:          url,
+		Threads:      threads,
+		Verbose:      verboseMode,
+		playlistFile: playlistFile,
+		outputName:   outputName,
 	}
 }
 
 func (a *App) Run() {
+
+	if a.playlistFile == nil {
+		a.DownloadVideo(a.Url, a.outputName)
+		return
+	}
+
+	lines, err := getPlaylistFileVideos(*a.playlistFile)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	for name, line := range lines {
+		a.DownloadVideo(line, name)
+	}
+
+}
+
+func getPlaylistFileVideos(playlistFile string) (map[string]string, error) {
+	var lines = make(map[string]string)
+	cntr := 1
+	file, err := os.Open(playlistFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		splits := strings.Split(line, " ")
+		if len(splits) != 2 {
+			lines[fmt.Sprintf("video_%s", cntr)] = splits[0]
+			cntr++
+		} else {
+			lines[splits[0]] = splits[1]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
+func (a *App) DownloadVideo(url string, fname string) {
 	defer a.cleanup()
 
 	fmt.Printf("[+] Downloading playlist...\n")
 
-	playlistFile, err := a.downloadFileToTemporary(a.Url)
+	playlistFile, err := a.downloadFileToTemporary(url)
 	if err != nil {
 		fmt.Println("[!] Error downloading playlist file:", err)
 		return
@@ -105,7 +157,7 @@ func (a *App) Run() {
 		a.tempFiles.slices = append(a.tempFiles.slices, downloadedSlice.path)
 	}
 
-	outputFile, err := os.OpenFile(a.createUnusedFilename(a.outputName), os.O_CREATE|os.O_WRONLY, 0644)
+	outputFile, err := os.OpenFile(a.createUnusedFilename(fname), os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Println("[!] Error opening output file:", err)
 		return
