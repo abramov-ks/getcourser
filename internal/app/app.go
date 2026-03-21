@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,7 @@ func NewApp(url string, threads int, verboseMode bool, playlistFile *string, out
 
 func (a *App) Run() {
 
-	if a.playlistFile == nil {
+	if a.playlistFile == nil || *a.playlistFile == "" {
 		a.DownloadVideo(a.Url, a.outputName)
 		return
 	}
@@ -98,12 +99,12 @@ func getPlaylistFileVideos(playlistFile string) (map[string]string, error) {
 	return lines, nil
 }
 
-func (a *App) DownloadVideo(url string, fname string) {
+func (a *App) DownloadVideo(playlistURL string, fname string) {
 	defer a.cleanup()
 
 	fmt.Printf("[+] Downloading playlist...\n")
 
-	playlistFile, err := a.downloadFileToTemporary(url)
+	playlistFile, err := a.downloadFileToTemporary(playlistURL)
 	if err != nil {
 		fmt.Println("[!] Error downloading playlist file:", err)
 		return
@@ -130,6 +131,12 @@ func (a *App) DownloadVideo(url string, fname string) {
 
 	fmt.Printf("[+] Found %d chunks to download\n", len(slicesToDownload))
 
+	baseURL, err := url.Parse(playlistURL)
+	if err != nil {
+		fmt.Println("[!] Error parsing playlist URL:", err)
+		return
+	}
+
 	numWorkers := len(slicesToDownload)
 	jobsChan := make(chan VideoChunk, numWorkers)
 	resultsChan := make(chan DownloadedVideoChunk, numWorkers)
@@ -144,7 +151,8 @@ func (a *App) DownloadVideo(url string, fname string) {
 	bar := a.createProgressBar(len(slicesToDownload))
 
 	for i, slice := range slicesToDownload {
-		jobsChan <- VideoChunk{i: i, url: slice, total: len(slicesToDownload)}
+		resolvedURL := resolveURL(baseURL, slice)
+		jobsChan <- VideoChunk{i: i, url: resolvedURL, total: len(slicesToDownload)}
 	}
 	close(jobsChan)
 
@@ -185,6 +193,14 @@ func (a *App) worker(slicesToDownload <-chan VideoChunk, results chan<- Download
 		downloadedFilePath, _ := a.downloadFileToTemporary(sliceToDownload.url)
 		results <- DownloadedVideoChunk{i: sliceToDownload.i, path: downloadedFilePath}
 	}
+}
+
+func resolveURL(base *url.URL, ref string) string {
+	refURL, err := url.Parse(ref)
+	if err != nil || refURL.IsAbs() {
+		return ref
+	}
+	return base.ResolveReference(refURL).String()
 }
 
 func (a *App) downloadFileToTemporary(url string) (string, error) {
