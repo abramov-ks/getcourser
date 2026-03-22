@@ -87,7 +87,7 @@ func getPlaylistFileVideos(playlistFile string) (map[string]string, error) {
 		line := scanner.Text()
 		splits := strings.Split(line, " ")
 		if len(splits) != 2 {
-			lines[fmt.Sprintf("video_%s", cntr)] = splits[0]
+			lines[fmt.Sprintf("video_%d", cntr)] = splits[0]
 			cntr++
 		} else {
 			lines[splits[0]] = splits[1]
