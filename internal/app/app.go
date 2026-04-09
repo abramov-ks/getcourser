@@ -28,7 +28,8 @@ type App struct {
 		playlist string
 		slices   []string
 	}
-	completed bool
+	completed        bool
+	actualOutputName string
 }
 
 type VideoChunk struct {
@@ -53,7 +54,6 @@ func NewApp(url string, threads int, verboseMode bool, playlistFile *string, out
 }
 
 func (a *App) Run() {
-
 	if a.playlistFile == nil || *a.playlistFile == "" {
 		a.DownloadVideo(a.Url, a.outputName)
 		return
@@ -68,11 +68,10 @@ func (a *App) Run() {
 	for name, line := range lines {
 		a.DownloadVideo(line, name)
 	}
-
 }
 
 func getPlaylistFileVideos(playlistFile string) (map[string]string, error) {
-	var lines = make(map[string]string)
+	lines := make(map[string]string)
 	cntr := 1
 	file, err := os.Open(playlistFile)
 	if err != nil {
@@ -100,6 +99,12 @@ func getPlaylistFileVideos(playlistFile string) (map[string]string, error) {
 }
 
 func (a *App) DownloadVideo(playlistURL string, fname string) {
+	// Reset per-run state so playlist-mode calls start clean.
+	a.completed = false
+	a.actualOutputName = ""
+	a.tempFiles.playlist = ""
+	a.tempFiles.slices = nil
+
 	defer a.cleanup()
 
 	fmt.Printf("[+] Downloading playlist...\n")
@@ -109,16 +114,14 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 		fmt.Println("[!] Error downloading playlist file:", err)
 		return
 	}
+	a.tempFiles.playlist = playlistFile
 
 	if a.Verbose {
 		fmt.Printf("[+] Start reading playlist...\n")
 	}
 
-	a.tempFiles.playlist = playlistFile
-
 	m3uReader := m3u.New(playlistFile)
 	slicesToDownload, err := m3uReader.GetSlices()
-
 	if err != nil {
 		fmt.Println("[!] Error getting m3u:", err)
 		return
@@ -137,26 +140,24 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 		return
 	}
 
-	numWorkers := len(slicesToDownload)
-	jobsChan := make(chan VideoChunk, numWorkers)
-	resultsChan := make(chan DownloadedVideoChunk, numWorkers)
-
-	downloadedSlices := make([]DownloadedVideoChunk, 0)
+	numJobs := len(slicesToDownload)
+	jobsChan := make(chan VideoChunk, numJobs)
+	resultsChan := make(chan DownloadedVideoChunk, numJobs)
 
 	fmt.Printf("[+] Start downloading with %d threads\n", a.Threads)
 	for w := 1; w <= a.Threads; w++ {
 		go a.worker(jobsChan, resultsChan)
 	}
 
-	bar := a.createProgressBar(len(slicesToDownload))
+	bar := a.createProgressBar(numJobs)
 
 	for i, slice := range slicesToDownload {
-		resolvedURL := resolveURL(baseURL, slice)
-		jobsChan <- VideoChunk{i: i, url: resolvedURL, total: len(slicesToDownload)}
+		jobsChan <- VideoChunk{i: i, url: resolveURL(baseURL, slice), total: numJobs}
 	}
 	close(jobsChan)
 
-	for a := 1; a <= numWorkers; a++ {
+	downloadedSlices := make([]DownloadedVideoChunk, 0, numJobs)
+	for i := 0; i < numJobs; i++ {
 		downloadedSlices = append(downloadedSlices, <-resultsChan)
 		bar.Add(1)
 	}
@@ -165,7 +166,10 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 		a.tempFiles.slices = append(a.tempFiles.slices, downloadedSlice.path)
 	}
 
-	outputFile, err := os.OpenFile(a.createUnusedFilename(fname), os.O_CREATE|os.O_WRONLY, 0644)
+	outputPath := a.createUnusedFilename(fname)
+	a.actualOutputName = outputPath
+
+	outputFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Println("[!] Error opening output file:", err)
 		return
@@ -178,8 +182,7 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 		return
 	}
 
-	err = a.concatFiles(outputFile, files)
-	if err != nil {
+	if err = a.concatFiles(outputFile, files); err != nil {
 		fmt.Println("[!] Error concatenating chunks:", err)
 		return
 	}
@@ -188,10 +191,13 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 	a.completed = true
 }
 
-func (a *App) worker(slicesToDownload <-chan VideoChunk, results chan<- DownloadedVideoChunk) {
-	for sliceToDownload := range slicesToDownload {
-		downloadedFilePath, _ := a.downloadFileToTemporary(sliceToDownload.url)
-		results <- DownloadedVideoChunk{i: sliceToDownload.i, path: downloadedFilePath}
+func (a *App) worker(jobs <-chan VideoChunk, results chan<- DownloadedVideoChunk) {
+	for job := range jobs {
+		path, err := a.downloadFileToTemporary(job.url)
+		if err != nil && a.Verbose {
+			fmt.Printf("[!] Error downloading chunk %d: %v\n", job.i, err)
+		}
+		results <- DownloadedVideoChunk{i: job.i, path: path}
 	}
 }
 
@@ -203,20 +209,19 @@ func resolveURL(base *url.URL, ref string) string {
 	return base.ResolveReference(refURL).String()
 }
 
-func (a *App) downloadFileToTemporary(url string) (string, error) {
-	if url == "" {
+func (a *App) downloadFileToTemporary(rawURL string) (string, error) {
+	if rawURL == "" {
 		return "", fmt.Errorf("url is empty")
 	}
 	hasher := md5.New()
-	hasher.Write([]byte(url))
+	hasher.Write([]byte(rawURL))
 	tempFile, err := os.CreateTemp("", hex.EncodeToString(hasher.Sum(nil)))
-	defer tempFile.Close()
-
 	if err != nil {
 		return "", err
 	}
+	defer tempFile.Close()
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -226,9 +231,7 @@ func (a *App) downloadFileToTemporary(url string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	_, err = io.Copy(tempFile, resp.Body)
-
-	if err != nil {
+	if _, err = io.Copy(tempFile, resp.Body); err != nil {
 		return "", err
 	}
 	return tempFile.Name(), nil
@@ -239,20 +242,19 @@ func (a *App) cleanup() {
 		fmt.Printf("[+] Cleaning up...\n")
 	}
 
-	if a.completed != true {
-		err := os.Remove(a.outputName)
-		if err == nil && a.Verbose {
+	if !a.completed && a.actualOutputName != "" {
+		if err := os.Remove(a.actualOutputName); err == nil && a.Verbose {
 			fmt.Printf("[+] Removed drafted output file\n")
 		}
 	}
 
-	err := os.Remove(a.tempFiles.playlist)
-	if err == nil && a.Verbose {
-		fmt.Printf("[+] Deleted playlist: %s\n", a.tempFiles.playlist)
+	if a.tempFiles.playlist != "" {
+		if err := os.Remove(a.tempFiles.playlist); err == nil && a.Verbose {
+			fmt.Printf("[+] Deleted playlist: %s\n", a.tempFiles.playlist)
+		}
 	}
 	for _, slice := range a.tempFiles.slices {
-		err := os.Remove(slice)
-		if err == nil && a.Verbose {
+		if err := os.Remove(slice); err == nil && a.Verbose {
 			fmt.Printf("[+] Deleted chunk: %s\n", slice)
 		}
 	}
@@ -261,12 +263,11 @@ func (a *App) cleanup() {
 func (a *App) concatFiles(outputFile *os.File, slices []string) error {
 	for _, slice := range slices {
 		sliceFile, err := os.Open(slice)
-		defer sliceFile.Close()
-
 		if err != nil {
 			return fmt.Errorf("could not open slice file %v", slice)
 		}
 		_, err = io.Copy(outputFile, sliceFile)
+		sliceFile.Close()
 		if err != nil {
 			return fmt.Errorf("could not copy slice file %v", slice)
 		}
@@ -286,23 +287,19 @@ func (a *App) getSliceByNo(slices []DownloadedVideoChunk, i int) *DownloadedVide
 func (a *App) createUnusedFilename(filename string) string {
 	if _, err := os.Stat(filename); errors.Is(err, os.ErrNotExist) {
 		return filename
-	} else {
-		var i = 1
-		var extension = filepath.Ext(filename)
-		var basename = filename[0 : len(filename)-len(extension)]
-
-		for {
-			var newName = fmt.Sprintf("%s(%d)%s", basename, i, extension)
-			if _, err := os.Stat(newName); errors.Is(err, os.ErrNotExist) {
-				return newName
-			}
-			i++
+	}
+	extension := filepath.Ext(filename)
+	basename := filename[0 : len(filename)-len(extension)]
+	for i := 1; ; i++ {
+		newName := fmt.Sprintf("%s(%d)%s", basename, i, extension)
+		if _, err := os.Stat(newName); errors.Is(err, os.ErrNotExist) {
+			return newName
 		}
 	}
 }
 
 func (a *App) reorderSlicesToArray(slices []DownloadedVideoChunk) ([]string, error) {
-	var files = make([]string, 0)
+	files := make([]string, 0, len(slices))
 	for i := 0; i < len(slices); i++ {
 		currentSlice := a.getSliceByNo(slices, i)
 		if currentSlice == nil {
@@ -310,7 +307,6 @@ func (a *App) reorderSlicesToArray(slices []DownloadedVideoChunk) ([]string, err
 		}
 		files = append(files, currentSlice.path)
 	}
-
 	return files, nil
 }
 

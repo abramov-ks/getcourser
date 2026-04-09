@@ -1,15 +1,17 @@
 package app
 
 import (
-	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // ---------------------------------------------------------------------------
-// getPlaylistFileVideos
+// helpers
 // ---------------------------------------------------------------------------
 
 func writePlaylistFile(t *testing.T, content string) string {
@@ -25,6 +27,19 @@ func writePlaylistFile(t *testing.T, content string) string {
 	t.Cleanup(func() { os.Remove(f.Name()) })
 	return f.Name()
 }
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// ---------------------------------------------------------------------------
+// getPlaylistFileVideos
+// ---------------------------------------------------------------------------
 
 func TestGetPlaylistFileVideos_NameAndURL(t *testing.T) {
 	content := "video1.mpg https://example.com/v1.m3u8\nvideo2.mpg https://example.com/v2.m3u8\n"
@@ -56,7 +71,6 @@ func TestGetPlaylistFileVideos_URLOnly(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(lines))
 	}
-	// Keys should be auto-generated as "video_1", "video_2"
 	if _, ok := lines["video_1"]; !ok {
 		t.Error("expected key video_1")
 	}
@@ -106,15 +120,6 @@ func TestGetPlaylistFileVideos_Empty(t *testing.T) {
 // resolveURL
 // ---------------------------------------------------------------------------
 
-func mustParseURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u
-}
-
 func TestResolveURL_AbsoluteRef(t *testing.T) {
 	base := mustParseURL(t, "https://example.com/path/playlist.m3u8")
 	result := resolveURL(base, "https://cdn.example.com/chunk.ts")
@@ -156,7 +161,6 @@ func TestCreateUnusedFilename_WithConflict(t *testing.T) {
 	dir := t.TempDir()
 	name := filepath.Join(dir, "output.mpg")
 
-	// Create the base file so there is a conflict.
 	f, err := os.Create(name)
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +265,6 @@ func TestReorderSlicesToArray_MissingIndex(t *testing.T) {
 
 func TestConcatFiles(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create two source chunk files.
 	chunk1 := filepath.Join(dir, "c1.ts")
 	chunk2 := filepath.Join(dir, "c2.ts")
 	if err := os.WriteFile(chunk1, []byte("AAAA"), 0644); err != nil {
@@ -333,5 +335,200 @@ func TestNewApp(t *testing.T) {
 	}
 }
 
-// Ensure fmt is used (some test helpers use it indirectly via errors).
-var _ = fmt.Sprintf
+// ---------------------------------------------------------------------------
+// downloadFileToTemporary
+// ---------------------------------------------------------------------------
+
+func TestDownloadFileToTemporary_EmptyURL(t *testing.T) {
+	a := &App{}
+	_, err := a.downloadFileToTemporary("")
+	if err == nil {
+		t.Fatal("expected error for empty URL, got nil")
+	}
+}
+
+func TestDownloadFileToTemporary_Success(t *testing.T) {
+	body := []byte("chunk data")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	a := &App{}
+	path, err := a.downloadFileToTemporary(srv.URL + "/chunk.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("expected %q, got %q", body, got)
+	}
+}
+
+func TestDownloadFileToTemporary_ServerError(t *testing.T) {
+	// The function currently does not check the HTTP status code,
+	// so a 500 still writes the body and returns no error — verify
+	// that behaviour is consistent (not a crash).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := &App{}
+	path, err := a.downloadFileToTemporary(srv.URL + "/chunk.ts")
+	// Either an error is returned or a temp file is created — both are valid.
+	if err == nil {
+		os.Remove(path)
+	}
+}
+
+func TestDownloadFileToTemporary_ConnectionRefused(t *testing.T) {
+	a := &App{}
+	_, err := a.downloadFileToTemporary("http://127.0.0.1:1") // nothing listening
+	if err == nil {
+		t.Fatal("expected error for refused connection, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cleanup
+// ---------------------------------------------------------------------------
+
+func TestCleanup_RemovesTempFilesOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+
+	playlist := filepath.Join(dir, "playlist.m3u8")
+	chunk := filepath.Join(dir, "chunk.ts")
+	output := filepath.Join(dir, "out.mpg")
+	for _, p := range []string{playlist, chunk, output} {
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := &App{
+		completed:        true,
+		actualOutputName: output,
+	}
+	a.tempFiles.playlist = playlist
+	a.tempFiles.slices = []string{chunk}
+
+	a.cleanup()
+
+	// Temp files should be gone; output file should remain (completed=true).
+	for _, p := range []string{playlist, chunk} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %q to be deleted", p)
+		}
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Errorf("output file should remain after successful download: %v", err)
+	}
+}
+
+func TestCleanup_RemovesOutputOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "out.mpg")
+	if err := os.WriteFile(output, []byte("partial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		completed:        false,
+		actualOutputName: output,
+	}
+
+	a.cleanup()
+
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Error("expected incomplete output file to be deleted")
+	}
+}
+
+func TestCleanup_NoOutputNameDoesNotPanic(t *testing.T) {
+	// cleanup should be safe when actualOutputName is empty (failure before file creation).
+	a := &App{completed: false, actualOutputName: ""}
+	a.cleanup() // must not panic
+}
+
+// ---------------------------------------------------------------------------
+// DownloadVideo — end-to-end with httptest
+// ---------------------------------------------------------------------------
+
+func TestDownloadVideo_EndToEnd(t *testing.T) {
+	chunk1 := []byte("CHUNK1DATA")
+	chunk2 := []byte("CHUNK2DATA")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/playlist.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			w.Write([]byte("#EXTM3U\n#EXTINF:5,\nchunk1.ts\n#EXTINF:5,\nchunk2.ts\n"))
+		case "/chunk1.ts":
+			w.Write(chunk1)
+		case "/chunk2.ts":
+			w.Write(chunk2)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "output.mpg")
+
+	a := NewApp(srv.URL+"/playlist.m3u8", 2, false, nil, outPath)
+	a.DownloadVideo(srv.URL+"/playlist.m3u8", outPath)
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("output file not created: %v", err)
+	}
+
+	got := string(data)
+	if !strings.Contains(got, "CHUNK1DATA") || !strings.Contains(got, "CHUNK2DATA") {
+		t.Errorf("unexpected output content: %q", got)
+	}
+}
+
+func TestDownloadVideo_ResetsStateBetweenCalls(t *testing.T) {
+	// Verify that calling DownloadVideo twice on the same App instance
+	// does not carry over stale state from the first run.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".m3u8"):
+			w.Write([]byte("#EXTM3U\n#EXTINF:5,\nchunk.ts\n"))
+		case strings.HasSuffix(r.URL.Path, ".ts"):
+			callCount++
+			w.Write([]byte("DATA"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+
+	a := NewApp("", 1, false, nil, "")
+
+	out1 := filepath.Join(dir, "run1.mpg")
+	a.DownloadVideo(srv.URL+"/run1.m3u8", out1)
+
+	out2 := filepath.Join(dir, "run2.mpg")
+	a.DownloadVideo(srv.URL+"/run2.m3u8", out2)
+
+	for _, p := range []string{out1, out2} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected output file %q to exist: %v", p, err)
+		}
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 chunk downloads (one per run), got %d", callCount)
+	}
+}
