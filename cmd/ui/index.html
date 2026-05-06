@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grabber</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+      color: #222;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.08);
+      padding: 32px;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    h1 { font-size: 1.5rem; margin-bottom: 24px; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .tab {
+      flex: 1;
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      background: none;
+      cursor: pointer;
+      font-size: .95rem;
+      transition: all .15s;
+    }
+    .tab.active {
+      border-color: #2563eb;
+      color: #2563eb;
+      font-weight: 600;
+    }
+
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; }
+
+    input[type=text], input[type=url], input[type=number], select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1.5px solid #ddd;
+      border-radius: 8px;
+      font-size: .95rem;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus, select:focus { border-color: #2563eb; }
+
+    .row { display: flex; gap: 12px; }
+    .row .field { flex: 1; }
+
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .95rem;
+      cursor: pointer;
+      margin-bottom: 20px;
+    }
+    input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+
+    button[type=submit] {
+      width: 100%;
+      padding: 12px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    button[type=submit]:hover { background: #1d4ed8; }
+    button[type=submit]:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    .console-wrap { margin-top: 24px; }
+    .console-label {
+      font-size: .8rem;
+      color: #888;
+      margin-bottom: 6px;
+    }
+    #output {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: .82rem;
+      line-height: 1.6;
+      min-height: 120px;
+      max-height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-size: .85rem;
+      font-weight: 600;
+    }
+    #status.ok { color: #16a34a; }
+    #status.err { color: #dc2626; }
+
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Grabber</h1>
+
+  <form id="form">
+    <div class="tabs">
+      <button type="button" class="tab active" data-mode="direct">M3U8 ссылка</button>
+      <button type="button" class="tab" data-mode="yadisk">Яндекс Диск</button>
+    </div>
+
+    <div id="pane-direct">
+      <div class="field">
+        <label>URL плейлиста (.m3u8)</label>
+        <input type="url" name="url" placeholder="https://example.com/playlist.m3u8">
+      </div>
+    </div>
+
+    <div id="pane-yadisk" hidden>
+      <div class="field">
+        <label>Ссылка на Яндекс Диск</label>
+        <input type="url" name="yadisk" placeholder="https://disk.yandex.ru/i/...">
+      </div>
+      <div class="field">
+        <label>Качество</label>
+        <select name="quality">
+          <option value="">Лучшее доступное</option>
+          <option value="720p">720p</option>
+          <option value="480p">480p</option>
+          <option value="360p">360p</option>
+          <option value="240p">240p</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Имя файла</label>
+        <input type="text" name="output" value="video.mpg" placeholder="video.mpg">
+      </div>
+      <div class="field" style="max-width:110px">
+        <label>Потоки</label>
+        <input type="number" name="threads" value="5" min="1" max="32">
+      </div>
+    </div>
+
+    <label class="checkbox-label">
+      <input type="checkbox" name="verbose">
+      Подробный вывод
+    </label>
+
+    <button type="submit" id="btn">Скачать</button>
+  </form>
+
+  <div class="console-wrap">
+    <div class="console-label">Вывод</div>
+    <pre id="output"></pre>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script>
+  let mode = 'direct';
+
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      mode = tab.dataset.mode;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.getElementById('pane-direct').hidden = mode !== 'direct';
+      document.getElementById('pane-yadisk').hidden = mode !== 'yadisk';
+    });
+  });
+
+  document.getElementById('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const btn = document.getElementById('btn');
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+
+    output.textContent = '';
+    status.textContent = '';
+    status.className = '';
+    btn.disabled = true;
+    btn.textContent = 'Загрузка...';
+
+    const data = new FormData();
+    data.set('mode', mode);
+    data.set('url',     form.url.value.trim());
+    data.set('yadisk',  form.yadisk.value.trim());
+    data.set('quality', form.quality.value);
+    data.set('output',  form.output.value.trim() || 'video.mpg');
+    data.set('threads', form.threads.value);
+    data.set('verbose', form.verbose.checked ? '1' : '');
+
+    try {
+      const resp = await fetch('/run', { method: 'POST', body: data });
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        output.textContent += dec.decode(value, { stream: true });
+        output.scrollTop = output.scrollHeight;
+      }
+
+      if (resp.ok) {
+        status.textContent = 'Готово!';
+        status.className = 'ok';
+      } else {
+        status.textContent = 'Завершено с ошибкой.';
+        status.className = 'err';
+      }
+    } catch (err) {
+      output.textContent += '\n[!] ' + err.message;
+      status.textContent = 'Ошибка соединения.';
+      status.className = 'err';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Скачать';
+    }
+  });
+</script>
+</body>
+</html>

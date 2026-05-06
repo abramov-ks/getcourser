@@ -44,16 +44,22 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
+          LDFLAGS="-s -w -X main.version=${{ github.ref_name }}"
           BINARY="grabber-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o "$BINARY" ./cmd/grabber
+          go build -ldflags="$LDFLAGS" -o "$BINARY" ./cmd/grabber
           echo "BINARY=$BINARY" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+          UI_BINARY="grabber-ui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
+          go build -ldflags="$LDFLAGS" -o "$UI_BINARY" ./cmd/ui
+          echo "UI_BINARY=$UI_BINARY" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: grabber-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ env.BINARY }}
+          path: |
+            ${{ env.BINARY }}
+            ${{ env.UI_BINARY }}
 
   release:
     name: Publish release
