@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/schollz/progressbar/v3"
+	"golang.org/x/term"
 )
 
 type App struct {
@@ -149,7 +150,11 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 		go a.worker(jobsChan, resultsChan)
 	}
 
-	bar := a.createProgressBar(numJobs)
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
+	var bar *progressbar.ProgressBar
+	if tty {
+		bar = a.createProgressBar(numJobs)
+	}
 
 	for i, slice := range slicesToDownload {
 		jobsChan <- VideoChunk{i: i, url: resolveURL(baseURL, slice), total: numJobs}
@@ -159,7 +164,11 @@ func (a *App) DownloadVideo(playlistURL string, fname string) {
 	downloadedSlices := make([]DownloadedVideoChunk, 0, numJobs)
 	for i := 0; i < numJobs; i++ {
 		downloadedSlices = append(downloadedSlices, <-resultsChan)
-		bar.Add(1)
+		if tty {
+			bar.Add(1)
+		} else if (i+1)%10 == 0 || i+1 == numJobs {
+			fmt.Printf("[+] Downloaded %d/%d chunks\n", i+1, numJobs)
+		}
 	}
 
 	for _, downloadedSlice := range downloadedSlices {
